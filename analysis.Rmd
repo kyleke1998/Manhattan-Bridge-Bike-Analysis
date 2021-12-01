@@ -1,0 +1,373 @@
+
+
+---
+title: "How Weather Conditions and Day of the Week Influence the Number of Bikes Crossing Manhattan Bridge?"
+author: "Kyle Ke"
+date: "11/27/2021"
+abstract: "The analysis aims to describe how weather conditions and day of the week impact the number of bicycles crossing Manhattan Bridge in NYC on a given day using Poisson regression models. The analysis concludes that precipitation and high temperature are the two biggest factors impacting the number of bikes crossing Manhattan bridge on a given day: As precipitation goes up, the number of bikes goes down, and as high temperature increases, the number of bikes also increases. The most significant interaction observed is between day of the week and high temperature."
+output:
+  pdf_document:
+    toc: yes
+  word_document:
+    toc: yes
+  html_document:
+    toc: yes
+    df_print: paged
+bibliography: 
+- analysis.bib
+- packages.bib
+biblio-style: apalike
+link-citations: yes
+nocite: '@*'
+header-includes:
+  \usepackage{placeins}
+  
+  
+  
+---
+
+
+
+
+```{r,echo=FALSE,results = FALSE,message=FALSE}
+knitr::opts_chunk$set(message = FALSE)
+```
+
+
+
+```{r,echo=FALSE,results = FALSE,warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(chron)
+library(fBasics)
+library(knitr)
+library(formatR)
+library(broom)
+library(jtools)
+library(readr)
+library(kableExtra)
+library(data.table)
+library(emmeans)
+
+source('gg_interaction_function.R')
+```
+
+```{r bib, include=FALSE}
+knitr::write_bib(c('rvest','dplyr','ggplot2','fBasics','knitr','formatR','janitor','readr'),
+                 file='packages.bib',width = 60)
+```
+
+
+```{r,echo=FALSE,results = FALSE}
+df <-readr:: read_csv("nyc-east-river-bicycle-counts.csv")
+#creating a new variable: day of week
+df$Date <- as.Date(df$Date)
+df$day_of_week <- weekdays(df$Date,abbreviate=TRUE)
+df$day_of_week <- factor(df$day_of_week,levels= c( "Mon", 
+    "Tue", "Wed", "Thu", "Fri", "Sat","Sun"))
+#We only care about 
+df <- df[,c(4,5,6,8,12)]
+colnames(df)[4] <- "Bike Counts"
+
+
+df <- df %>% mutate(Precipitation=case_when(
+    Precipitation %in% c("0","T") ~ 'Dry-Trace',
+    Precipitation %in%  c("0.01","0.05","0.09") ~ 'Mid Low',
+    Precipitation %in% c("0.15","0.16","0.2","0.24") ~ 'Mid High',
+    Precipitation %in% c("0.47 (S)") ~ "High Snow"
+    
+))
+
+
+df <- df %>% mutate(Low_Temp=case_when(
+     `Low Temp (°F)`>= 26.1 & `Low Temp (°F)` <= 39.9 ~ 'Low',
+        `Low Temp (°F)`> 39.9 & `Low Temp (°F)` <= 52.0 ~ 'Mid',
+    `Low Temp (°F)`> 52.0 & `Low Temp (°F)` <= 66.0 ~ 'High',
+ ))
+
+df <- df %>% mutate(High_Temp=case_when(
+     `High Temp (°F)`>= 39.9 & `High Temp (°F)` < 55.0 ~ 'Low',
+        `High Temp (°F)`>= 55.0 & `High Temp (°F)` < 71.1 ~ 'Mid',
+     `High Temp (°F)`>= 71.1 & `High Temp (°F)` <= 81.0 ~ 'High',
+ ))
+df$Precipitation = factor(df$Precipitation,levels=c("High Snow","Mid High","Mid Low","Dry-Trace"))
+df$Precipitation=relevel(df$Precipitation,ref="High Snow")
+df$Low_Temp= factor(df$Low_Temp,levels=c("Low","Mid","High"))
+df$High_Temp=factor(df$High_Temp,levels=c("Low","Mid","High"))
+df$High_Temp=relevel(df$High_Temp,ref="Low")
+df$Low_Temp=relevel(df$Low_Temp,ref="Low")
+df$day_of_week=factor(df$day_of_week)
+df$day_of_week=relevel(df$day_of_week,ref="Mon")
+sum(is.na.data.frame(df))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+\newpage
+
+
+
+# Introduction
+Every day, thousands of bikers bike across East River via the Manhattan Bridge in New York City. The East River Bicycle Crossing data set from (@kaggle) contains the number of bicycles crossing Manhattan Bridge each day for a stretch of 9 months. Factors such as high temperature, low temperature, date, and precipitation are included in the data set. This analysis investigates how weather conditions and day of the week influence the number of bikes crossing Manhattan Bridge each day using Poisson regression models. The significance level was adjusted to be 0.002 (0.05/28) after Bonferoni correction.
+
+
+
+# Methdology
+
+## Data Preprocessing
+First, a factor representing day of week was extracted from the date column. Next,the continuous explanatory variables high temperature and low temperature were both transformed into categorical variables with three levels: \emph{Low}, \emph{Mid}, and \emph{High}. The explanatory variable precipitation was then reduced from nine levels to four levels: \emph{High Snow}, \emph{Mid High}, \emph{Mid Low}, and \emph{Low}. The levels were created to ensure equal interval between levels. Please refer to the code in the appendix for detailed splitting of the factor levels.
+
+
+## Modeling
+Poisson regression (i.e. generalized linear model with poisson link function) was chosen to model the relationship between bicycle counts (dependent variable), and day of the week, high temperature, low temperature, and precipitation (explanatory variables). Poisson regression has the following four assumptions (@legler_roback_2021):
+
+1. Poisson Response: The response is a count per unit of time, described by a poisson distribution.
+2. Independence: The observations must be independent of one another.
+3. Mean = variance: By definition, the mean of a Poisson random variable must be equal to its variance.
+4. Linearity: The log of mean rate must be a linear function of x.
+
+The model building process starts with the full model (i.e. model with the highest number of interactions). The full model is then gradually reduced to the final model. The statistical significance of the explanatory variables are determined by comparing nested models using the Likelihood ratio test (also Chi-squared test in this case). The model reduction process follows the following principles:
+
+- Only variables that are deemed significant by the Chi-squared test are kept.
+- Only variables that explain a large amount of the variation in the total sum of squares are kept.
+- Ensure the root-mean-squared residuals of the final model is acceptable compared to the root-mean-squared residuals of the full model.
+- Variables with large deviance are moved to the beginning of the reduced model.
+- Make sure the model has a decent R-squared value, but also avoid over-fitting.
+- Co-linear variables are removed.
+- Follow Occan's razor by keeping the model as simple as possible.
+
+Lastly, the coefficients of the final model is transformed from log(mean rate) to percent change for interpretability. 
+\newpage
+
+# EDA
+
+
+```{r, echo=FALSE}
+Factor_name = c("day_of_week","High_Temp","Low_Temp","Precipitation")
+Factor_Levels = c("Sun Mon Tue Wed Thu Fri Sat","Low, Mid, High","Low, Mid, ","Dry-Trace, Mid Low, Mid High, High Snow")
+factor_and_levels= data.frame(Factor_name,Factor_Levels)
+knitr::kable(factor_and_levels,caption = "Factors and Levels",) %>% kable_styling(position = "center",latex_options = "HOLD_position")
+```
+
+
+
+```{r,echo=FALSE,dotplot,fig.cap = "Bike Counts Dotplot by Precipitation",fig.width=7, fig.height=5,fig.align='Center'}
+ggplot(df, aes(x = `Bike Counts`, fill = Precipitation)) + geom_dotplot(binaxis = 'x', stackdir = 'up')
+```
+We observe from the dot plot of bike counts that when the bike counts is greater than approximately 4500, the precipitation level will always be dry to trace .
+
+
+\newpage
+
+```{r,echo=FALSE,boxplot,fig.cap = "Bike Counts Boxplot by Precipitation",fig.width=6, fig.height=3,fig.align='Center'}
+ggplot(df, aes(x = Precipitation, y = `Bike Counts`)) + geom_boxplot()
+
+```
+
+
+```{r,echo=FALSE,boxplot2,fig.cap = "Bike Counts Boxplot by High Temp",fig.width=6, fig.height=3,fig.align='Center'}
+ggplot(df, aes(x = High_Temp, y = `Bike Counts`)) + geom_boxplot()
+
+```
+Figure 2 shows that as precipitation decreases, bike counts increases, and figure 3 shows that as high temperature increases bike counts also increases.
+
+
+\newpage
+
+# Results
+
+
+
+
+## Full Model
+```{r,echo=FALSE,results=TRUE}
+model1 <- glm(`Bike Counts` ~ (day_of_week+`High_Temp`+`Low_Temp`+Precipitation)^4,family="poisson", data=df)
+anova_model1 <- anova(model1,test='Chisq')
+knitr::kable(anova_model1,caption = "ANOVA of Full Model") %>% kable_styling(position = "center",latex_options = "HOLD_position")
+dayofweek_explains_1 = round(anova_model1$Deviance[2]/anova_model1$`Resid. Dev`[1],digits=3)
+highTemp_explains_1 = round(anova_model1$Deviance[3]/anova_model1$`Resid. Dev`[1],digits=3)
+precip_explains_1 = round(anova_model1$Deviance[5]/anova_model1$`Resid. Dev`[1],digits=3)
+r_squared_1 = round(1-anova_model1$`Resid. Dev`[9]/anova_model1$`Resid. Dev`[1],digits = 3)
+rmse_1 = round(sqrt(mean((residuals(model1,type='response')^2))),digits=3)
+#plot(predict(model1,type='response'),predict(model1,type='response')-df$`Bike Counts` ) 
+```
+The ANOVA table of the full model shows the main effects: precipitation, day of week, high temperature, and low temperature are all statistically significant with p-value of 0. The interaction terms high temperature and day of week, low temperature and day of week, and precipitation and weekday are all statistically significant with p-value of 0. Within the statistically significant factors, day of week explains `r (dayofweek_explains_1 * 100)`% of the variation in the total sum of squares. High temperature, adjusted for day of the week, explains `r (highTemp_explains_1 * 100)`% of the variation in the total sum of squares. And precipitation, adjusted for day of the week, high temperature, and low temperature, explains `r precip_explains_1 *100`% of the variation in the total sum of squares.
+
+The R-squared value of the full model is calculated to be `r r_squared_1 `,meaning `r (r_squared_1 * 100)`% of the variation in bike counts is explained by the full model. In addition, the root-mean-squared residuals is calculated to be `r rmse_1`, meaning on average, predicted daily bike counts from the full model is `r rmse_1` counts away from the actual value of daily bike counts.
+
+Following the model reduction principles described in the methods section, the final model only includes precipitation, high temperature, day of the week, and the interaction between high temperature and day of the week. Note that low temperature is dropped because it is co-linear with high temperature. Please see the appendix for the detailed model reduction process and the in-between models.
+
+
+
+```{r,echo=FALSE,results=FALSE}
+#Dropping all of the non-significant features and order the sequential model based on the features with highest deviance: 
+
+model2 <- glm(`Bike Counts` ~ `High_Temp`+Precipitation+day_of_week+day_of_week:Precipitation+day_of_week:High_Temp+High_Temp:Precipitation+Low_Temp+day_of_week:Low_Temp,family="poisson", data=df)
+anova(model2,test='LRT')
+```
+
+```{r,echo=FALSE,results=FALSE}
+#Dropping colinear terms (Low_Temp) with small deviance day_of_week:Low_Temp, Precipitation:day_of_week, High_Temp:Precipitation
+
+model3 <- glm(`Bike Counts` ~ `High_Temp`+Precipitation+day_of_week+day_of_week:High_Temp,family="poisson", data=df)
+anova(model3,test='LRT')
+  
+
+
+
+```
+
+
+\clearpage
+## Final Model
+
+The final model is split into two models in order to interpret both the main effects and the interaction effects: The first model includes only the main effects of precipitation, high temperature, and day of the week. The second model includes all of the aforementioned main effects and an added interaction term between high temperature and day of the week.
+
+```{r,echo=FALSE}
+#Switching the order of Precipitation and `High_Temp`
+
+model4 <- glm(`Bike Counts` ~ Precipitation+`High_Temp`+day_of_week,family="poisson", data=df)
+#plot(predict(model4,type='response'),predict(model4,type='response')-df$`Bike Counts` )  
+anova_model4 <- anova(model4,test='Chisq')
+knitr::kable(anova_model4,caption = "ANOVA of Final Model (main effects only)") %>% kable_styling(position = "center",latex_options = "HOLD_position")
+precipitation_explain_4 = round(anova_model4$Deviance[2]/anova_model4$`Resid. Dev`[1],digits=3)
+high_temp_explain_4 = round(anova_model4$Deviance[3]/anova_model4$`Resid. Dev`[1],digits=3)
+r_squared_4 = round(1-anova_model4$`Resid. Dev`[4]/anova_model4$`Resid. Dev`[1],digits = 3)
+rmse_4 = round(sqrt(mean((residuals(model4,type='response')^2))),digits=3)
+```
+
+The ANOVA table of the final model (main effects only) shows that precipitation alone account for `r (precipitation_explain_4*100)`% of the variation in the total sum of squares. High temperature, adjusted for precipitation, account for `r (high_temp_explain_4*100)`% of the variation in the total sum of squares.The R-squared value is calculated to be `r r_squared_4 `,meaning `r (r_squared_4 * 100)`% of the variation in bike counts is explained by the main-effects-only final model. In addition, the root-mean-squared residuals is calculated to be `r rmse_4 `, meaning on average, predicted daily bike counts from the main-effects-only final model is `r rmse_4` counts away from the actual value of daily bike counts. The difference between root-mean-squared residuals of the full model and the main-effects-only final model is around `r round(rmse_4-rmse_1,digits=0)` bikes. 
+
+```{r,echo=FALSE}
+model4_coef = as.data.frame(round(100*(exp(coef(model4))-1),2))
+colnames(model4_coef)[1] <- "Percent_Change"
+knitr::kable(model4_coef,caption = "Final Model (main effects only) Coeffcients as Percent Change") %>% kable_styling(position = "center",latex_options = "HOLD_position")
+```
+From the coefficient table of the main effects only final model, we see that comparing to the high-snow level of precipitation, the average bike counts increases by `r model4_coef$Percent_Change[2]`% when the precipitation level is mid-high, increases by `r model4_coef$Percent_Change[3]`% when the precipitation level is mid-low, and increases by `r model4_coef$Percent_Change[4]`% when the precipitation level is dry-trace, holding all else constant. In addition, we observe that comparing to the low level of high temperature, the average bike counts increase by `r model4_coef$Percent_Change[5]`% when the high temperature level is mid and increases by `r model4_coef$Percent_Change[6]`% when the high temperature level is high, holding all else constant. All of the days of the week seem to decrease the average bike counts compared to Monday.
+
+
+\newpage
+
+```{r,echo=FALSE}
+model5 = glm(`Bike Counts` ~ Precipitation+`High_Temp`+day_of_week + `High_Temp`:day_of_week ,family="poisson", data=df)
+anova_model5 <- anova(model5,test='Chisq')
+knitr::kable(anova_model5,caption = "ANOVA of Final Model (with interaction)")
+#%>% kable_styling(position = "center",latex_options = "HOLD_position")
+r_squared_5 = round(1-anova_model5$`Resid. Dev`[5]/anova_model4$`Resid. Dev`[1],digits = 3)
+interaction_explains = round(anova_model5$Deviance[5]/anova_model5$`Resid. Dev`[1],digits=3)
+rmse_5 = round(sqrt(mean((residuals(model5,type='response')^2))),digits=3)
+
+```
+
+Adding the interaction effect between day of the week and high temperature, the R-squared of the final model (with interaction) increased from `r r_squared_4` (main effects only) to `r r_squared_5`. The root-mean-squared residuals is now `r rmse_5`, which only differs from the root-mean-squared residuals of the full model by `r rmse_5 - rmse_1`. 
+
+```{r,echo=FALSE,results=FALSE,warning=FALSE,interaction_plot1,fig.cap = "Day of the Week and High Temp Interaction 1",fig.width=5.5, fig.height=2,fig.align='Center'}
+
+
+preds_model5 <- predict(model5,type="response")
+df_pred<- cbind(df, preds_model5 )
+gg_interaction(x = c("day_of_week", "High_Temp"), y = "preds_model5", random = NULL, data = df_pred)
+
+
+```
+
+```{r,echo=FALSE,results=FALSE,warning=FALSE,interaction_plot2,fig.cap = "Day of the Week and High Temp Interaction 2",fig.width=5.5, fig.height=2,fig.align='Center'}
+
+gg_interaction(x = c("High_Temp", "day_of_week"), y = "preds_model5", random = NULL, data = df_pred)
+
+```
+
+\clearpage
+
+From the interaction plot 1 between day of the week and high temperature, we observe that when the high temperature is at the mid level, predicted bike counts tend to decrease drastically from Monday to Tuesday. However, when the high temperature is at the low level, predicted bike counts increases drastically from Monday to Tuesday. In addition, when the high temperature is at the high level, predicted bike counts decreases from Thursday to Friday. On the other hand, when the high temperature is at the mid level, predicted bike counts increases from Thursday to Friday.
+
+From interaction plot 2 between day of the week and high temperature, we observe that on Fridays, predicted bike counts tend to remain the same regardless of high temperature. On Tuesdays, predicted bike counts tends to only increase a little bit from the low level to mid level, but increases drastically from the mid level to high level. On Sundays, predicted bike counts increases greatly from low level to mid level of high temperature, but remains relatively the same from mid level to high level.
+
+
+
+
+
+
+
+## Checking Assumptions
+
+```{r,echo=FALSE,boxplot3,fig.cap = "Log(Bike Counts) Boxplot by Precipitation",fig.width=5.5, fig.height=2,fig.align='Center'}
+df$log_bike_counts = log(df$`Bike Counts`)
+ggplot(df, aes(x = Precipitation, y = log_bike_counts)) + geom_boxplot()+geom_smooth(method = "lm", se=FALSE, color="black", aes(group=1))
+
+```
+
+
+```{r,echo=FALSE,boxplot4,fig.cap = "Log(Bike Counts) Boxplot by High Temp",fig.width=5.5, fig.height=2,fig.align='Center'}
+ggplot(df, aes(x = High_Temp, y = log_bike_counts )) + geom_boxplot() + geom_smooth(method = "lm", se=FALSE, color="black", aes(group=1))
+
+```
+
+\clearpage
+
+```{r,echo=FALSE,boxplot5,fig.cap = "Log(Bike Counts) Boxplot by Day of the Week",fig.width=5.5, fig.height=2,fig.align='Center'}
+ggplot(df, aes(x = day_of_week, y = log_bike_counts)) + geom_boxplot() + geom_smooth(method = "lm", se=FALSE, color="black", aes(group=1))
+
+```
+
+```{r,echo=FALSE,residual,fig.cap = "Resid vs Fitted (Final Model with Interaction)",fig.width=6, fig.height=3,fig.align='Center'}
+res <- resid(model5,type='response')
+plot(fitted(model5), res)
+abline(0,0)
+Mean = round(mean(df$`Bike Counts`),digits=3)
+variance = round(var(df$`Bike Counts`),digits=3)
+
+```
+
+
+1. Poisson Response: Bike counts is count per day.
+2. Independence: NOT MET. From the residual vs fitted value plot, we do not see any violation of independence. However, data is collected on consecutive dates. Thus, there has to be some kind of time correlation between data points.
+3. Mean = variance: NOT MET. Mean `r round(Mean,digits=0)` does not equal variance `r round(as.integer(format(variance,scientific=F)),digits=2)`
+4. Linearity: From the box plots between log(bike counts) and the variables we see the linearity assumption is met.
+
+
+\clearpage
+# Conclusions
+
+
+Precipitation is the biggest factor that influences the number of bikes crossing Manhattan Bridge. Generally speaking, as precipitation goes down, the number of bikes increases. The second biggest factor is high temperature. Generally speaking, as high temperature increases the number of bikes also increases. Together, these two factors explain over two-thirds of the variation in the total sum of squares. Moreover, bike counts start out high on Monday, and drop drastically on Tuesday, climb back up on Wednesday, and then decline towards the weekends. The greatest interaction observed is between high temperature and day of the week. This interaction effect is explained in the results section. Thus, the analysis achieved its objective of explaining how weather conditions and day of the week influence the number of bikes crossing Manhattan Bridge in a given day. Although we did not test our final model on a test set, we have reasons to believe the final model (with interaction) will predict well on unseen data because it has a high R-squared of `r r_squared_5`.
+
+# Recommedations for Future Studies
+
+The data points are gathered on consecutive dates. Further studies could investigate the time series aspect of the data. This is a hole in the current analysis that needs to be filled. Furthermore, the data only spans a period of 9 months. It'd be more ideal if a full year of data can is gathered.
+
+\newpage
+
+# References
+::: {#refs}
+:::
+
+\newpage
+
+# Appendix
+
+## Code
+```{r ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE}
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=100), tidy=TRUE)
+```
+
+
+
+
+
+
